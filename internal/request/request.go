@@ -8,8 +8,30 @@ import (
 	"strings"
 )
 
+type requestState int
+
+const crlf = "\r\n"
+const bufferSize = 8
+
+const (
+	requestStateInitialized requestState = iota
+	requestStateDone
+)
+
+func (s requestState) String() string {
+	switch s {
+	case requestStateInitialized:
+		return "requestStateInitialized"
+	case requestStateDone:
+		return "requestStateDone"
+	default:
+		return "unknown"
+	}
+}
+
 type Request struct {
-	RequestLine RequestLine
+	RequestLine  RequestLine
+	RequestState requestState
 }
 
 type RequestLine struct {
@@ -17,8 +39,6 @@ type RequestLine struct {
 	RequestTarget string
 	Method        string
 }
-
-const crlf = "\r\n"
 
 var validMethods = map[string]struct{}{
 	"GET":     {},
@@ -33,30 +53,80 @@ var validMethods = map[string]struct{}{
 }
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	rawBytes, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, err
+	buf := make([]byte, bufferSize, bufferSize)
+	readToIndex := 0
+	req := &Request{
+		RequestState: requestStateInitialized,
 	}
-	requestLine, err := parseRequestLine(rawBytes)
-	if err != nil {
-		return nil, err
+	for req.RequestState != requestStateDone {
+		// if buffer is full, create new buffer twice the size and copy the old data
+		if readToIndex >= len(buf) {
+			newBuf := make([]byte, len(buf)*2)
+			copy(newBuf, buf)
+			buf = newBuf
+		}
+		numBytesRead, err := reader.Read(buf[readToIndex:])
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if req.RequestState != requestStateDone {
+					return nil, errors.New("request not complete, EOF reached")
+				}
+				break
+			}
+			return nil, fmt.Errorf("error reading from request reader: %w", err)
+		}
+		readToIndex += numBytesRead
+		offset, err := req.parse(buf[:readToIndex])
+		if err != nil {
+			return nil, fmt.Errorf("error parsing request: %w", err)
+		}
+		// copy the data to a new buffer
+		if offset < readToIndex {
+			newBuf := make([]byte, readToIndex-offset)
+			copy(newBuf, buf[offset:readToIndex])
+			buf = newBuf
+		} else {
+			buf = nil // no data left to copy
+		}
+		// decrement readtoIndex to account for the offset
+		readToIndex -= offset
 	}
-	return &Request{
-		RequestLine: *requestLine,
-	}, nil
+
+	return req, nil
 }
 
-func parseRequestLine(data []byte) (*RequestLine, error) {
+func parseRequestLine(data []byte) (*RequestLine, int, error) {
 	idx := bytes.Index(data, []byte(crlf))
 	if idx == -1 {
-		return nil, fmt.Errorf("could not find CRLF in request-line")
+		return nil, 0, nil
 	}
 	requestLineText := string(data[:idx])
 	requestLine, err := requestLineFromString(requestLineText)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return requestLine, nil
+
+	return requestLine, idx + len(crlf), nil
+}
+
+func (r *Request) parse(data []byte) (int, error) {
+	if r.RequestState != requestStateInitialized {
+		return 0, errors.New("request already parsed or not requestStateInitialized")
+	}
+
+	requestLine, offset, err := parseRequestLine(data)
+	if err != nil {
+		return 0, err
+	}
+
+	if requestLine == nil && offset == 0 {
+		return 0, nil // not enough data to parse request line
+	}
+
+	r.RequestLine = *requestLine
+	r.RequestState = requestStateDone
+
+	return offset, nil
 }
 
 func requestLineFromString(line string) (*RequestLine, error) {
@@ -65,7 +135,7 @@ func requestLineFromString(line string) (*RequestLine, error) {
 
 	// check for path
 	if len(parts) != 3 {
-		return nil, errors.New("malformed request. expected: [method] [target] HTTP/1.1")
+		return nil, errors.New("malformed request line, must have exactly 3 parts")
 	}
 
 	method = parts[0]
