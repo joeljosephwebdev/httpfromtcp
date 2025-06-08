@@ -30,10 +30,13 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("Request line: \n - Method: %s\n - Target: %s\n - Version: %s\n",
+		fmt.Printf("Request line: \n - Method: %s\n - Target: %s\n - Version: %s\nHeaders:\n",
 			requestLine.RequestLine.Method,
 			requestLine.RequestLine.RequestTarget,
 			requestLine.RequestLine.HttpVersion)
+		for key, value := range requestLine.Headers {
+			fmt.Printf(" - %s: %s\n", key, value)
+		}
 		fmt.Println("connection closed")
 	}
 }

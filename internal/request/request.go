@@ -6,32 +6,14 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/joeljosephwebdev/httpfromtcp/internal/headers"
 )
-
-type requestState int
-
-const crlf = "\r\n"
-const bufferSize = 8
-
-const (
-	requestStateInitialized requestState = iota
-	requestStateDone
-)
-
-func (s requestState) String() string {
-	switch s {
-	case requestStateInitialized:
-		return "requestStateInitialized"
-	case requestStateDone:
-		return "requestStateDone"
-	default:
-		return "unknown"
-	}
-}
 
 type Request struct {
-	RequestLine  RequestLine
-	RequestState requestState
+	RequestLine RequestLine
+	Headers     headers.Headers
+	state       requestState
 }
 
 type RequestLine struct {
@@ -39,6 +21,17 @@ type RequestLine struct {
 	RequestTarget string
 	Method        string
 }
+
+type requestState int
+
+const (
+	requestStateInitialized requestState = iota
+	requestStateParsingHeaders
+	requestStateDone
+)
+
+const crlf = "\r\n"
+const bufferSize = 8
 
 var validMethods = map[string]struct{}{
 	"GET":     {},
@@ -56,42 +49,38 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	buf := make([]byte, bufferSize, bufferSize)
 	readToIndex := 0
 	req := &Request{
-		RequestState: requestStateInitialized,
+		state:   requestStateInitialized,
+		Headers: headers.NewHeaders(),
 	}
-	for req.RequestState != requestStateDone {
+	for req.state != requestStateDone {
 		// if buffer is full, create new buffer twice the size and copy the old data
 		if readToIndex >= len(buf) {
 			newBuf := make([]byte, len(buf)*2)
 			copy(newBuf, buf)
 			buf = newBuf
 		}
+
 		numBytesRead, err := reader.Read(buf[readToIndex:])
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				if req.RequestState != requestStateDone {
-					return nil, errors.New("request not complete, EOF reached")
+				if req.state != requestStateDone {
+					return nil, fmt.Errorf("incomplete request, in state: %d, read n bytes on EOF: %d", req.state, numBytesRead)
 				}
 				break
 			}
-			return nil, fmt.Errorf("error reading from request reader: %w", err)
+			return nil, err
 		}
 		readToIndex += numBytesRead
-		offset, err := req.parse(buf[:readToIndex])
+
+		numBytesParsed, err := req.parse(buf[:readToIndex])
 		if err != nil {
-			return nil, fmt.Errorf("error parsing request: %w", err)
+			// if the error is not ErrInsufficientData, it means we have a parsing error
+			return nil, err
 		}
 		// copy the data to a new buffer
-		if offset < readToIndex {
-			newBuf := make([]byte, readToIndex-offset)
-			copy(newBuf, buf[offset:readToIndex])
-			buf = newBuf
-		} else {
-			buf = nil // no data left to copy
-		}
-		// decrement readtoIndex to account for the offset
-		readToIndex -= offset
+		copy(buf, buf[numBytesParsed:])
+		readToIndex -= numBytesParsed
 	}
-
 	return req, nil
 }
 
@@ -105,67 +94,88 @@ func parseRequestLine(data []byte) (*RequestLine, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-
-	return requestLine, idx + len(crlf), nil
+	return requestLine, idx + 2, nil
 }
 
-func (r *Request) parse(data []byte) (int, error) {
-	if r.RequestState != requestStateInitialized {
-		return 0, errors.New("request already parsed or not requestStateInitialized")
-	}
-
-	requestLine, offset, err := parseRequestLine(data)
-	if err != nil {
-		return 0, err
-	}
-
-	if requestLine == nil && offset == 0 {
-		return 0, nil // not enough data to parse request line
-	}
-
-	r.RequestLine = *requestLine
-	r.RequestState = requestStateDone
-
-	return offset, nil
-}
-
-func requestLineFromString(line string) (*RequestLine, error) {
-	parts := strings.Fields(line)
-	var requestTarget, version, method string
-
+func requestLineFromString(str string) (*RequestLine, error) {
+	parts := strings.Split(str, " ")
 	// check for path
 	if len(parts) != 3 {
-		return nil, errors.New("malformed request line, must have exactly 3 parts")
+		return nil, fmt.Errorf("poorly formatted request-line: %s", str)
 	}
 
-	method = parts[0]
+	method := parts[0]
 	_, ok := validMethods[method]
 	if !ok {
 		return nil, errors.New("incorrect method used")
 	}
 
-	requestTarget = parts[1]
+	requestTarget := parts[1]
 
 	versionParts := strings.Split(parts[2], "/")
 	if len(versionParts) != 2 {
-		return nil, fmt.Errorf("malformed start-line: %s", line)
+		return nil, fmt.Errorf("malformed start-line: %s", str)
 	}
 
 	httpPart := versionParts[0]
 	if httpPart != "HTTP" {
 		return nil, fmt.Errorf("unrecognized HTTP-version: %s", httpPart)
 	}
-
-	version = versionParts[1]
+	version := versionParts[1]
 	if version != "1.1" {
 		return nil, fmt.Errorf("unrecognized HTTP-version: %s", version)
 	}
 
 	requestLine := &RequestLine{
-		HttpVersion:   version,
-		RequestTarget: requestTarget,
 		Method:        method,
+		RequestTarget: requestTarget,
+		HttpVersion:   versionParts[1],
 	}
-
 	return requestLine, nil
+}
+
+func (r *Request) parse(data []byte) (int, error) {
+	totalBytesParsed := 0
+	for r.state != requestStateDone {
+		n, err := r.parseSingle(data[totalBytesParsed:])
+		if err != nil {
+			return 0, err
+		}
+		totalBytesParsed += n
+		if n == 0 {
+			break // not enough data to parse
+		}
+	}
+	return totalBytesParsed, nil
+}
+
+func (r *Request) parseSingle(data []byte) (int, error) {
+	switch r.state {
+	case requestStateInitialized:
+		requestLine, n, err := parseRequestLine(data)
+		if err != nil {
+			// something actually went wrong
+			return 0, err
+		}
+		if n == 0 {
+			// just need more data
+			return 0, nil
+		}
+		r.RequestLine = *requestLine
+		r.state = requestStateParsingHeaders
+		return n, nil
+	case requestStateParsingHeaders:
+		n, done, err := r.Headers.Parse(data)
+		if err != nil {
+			return 0, err
+		}
+		if done {
+			r.state = requestStateDone
+		}
+		return n, nil
+	case requestStateDone:
+		return 0, fmt.Errorf("error: trying to read data in a done state")
+	default:
+		return 0, fmt.Errorf("unknown state")
+	}
 }
