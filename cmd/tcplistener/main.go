@@ -26,17 +26,18 @@ func main() {
 		defer conn.Close()
 
 		fmt.Println("connection accepted")
-		requestLine, err := request.RequestFromReader(conn)
+		request, err := request.RequestFromReader(conn)
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Printf("Request line: \n - Method: %s\n - Target: %s\n - Version: %s\nHeaders:\n",
-			requestLine.RequestLine.Method,
-			requestLine.RequestLine.RequestTarget,
-			requestLine.RequestLine.HttpVersion)
-		for key, value := range requestLine.Headers {
+			request.RequestLine.Method,
+			request.RequestLine.RequestTarget,
+			request.RequestLine.HttpVersion)
+		for key, value := range request.Headers {
 			fmt.Printf(" - %s: %s\n", key, value)
 		}
+		fmt.Printf("Body: \n %s\n", request.Body)
 		fmt.Println("connection closed")
 	}
 }

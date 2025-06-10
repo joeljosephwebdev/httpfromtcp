@@ -3,6 +3,7 @@ package headers
 import (
 	"bytes"
 	"fmt"
+	"strings"
 )
 
 const crlf = "\r\n"
@@ -54,6 +55,12 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 
 	bytesConsumed = idx + len(crlf)
 	return bytesConsumed, false, nil
+}
+
+func (h Headers) Get(name string) (string, bool) {
+	key := strings.ToLower(name)
+	value, ok := h[key]
+	return value, ok
 }
 
 func validateHeaderName(name string) bool {

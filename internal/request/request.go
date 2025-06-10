@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/joeljosephwebdev/httpfromtcp/internal/headers"
@@ -13,6 +14,7 @@ import (
 type Request struct {
 	RequestLine RequestLine
 	Headers     headers.Headers
+	Body        []byte
 	state       requestState
 }
 
@@ -27,6 +29,7 @@ type requestState int
 const (
 	requestStateInitialized requestState = iota
 	requestStateParsingHeaders
+	requestStateParsingBody
 	requestStateDone
 )
 
@@ -51,6 +54,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	req := &Request{
 		state:   requestStateInitialized,
 		Headers: headers.NewHeaders(),
+		Body:    make([]byte, 0),
 	}
 	for req.state != requestStateDone {
 		// if buffer is full, create new buffer twice the size and copy the old data
@@ -170,9 +174,34 @@ func (r *Request) parseSingle(data []byte) (int, error) {
 			return 0, err
 		}
 		if done {
-			r.state = requestStateDone
+			r.state = requestStateParsingBody
 		}
 		return n, nil
+	case requestStateParsingBody:
+		contentLengthStr, exists := r.Headers.Get("Content-Length")
+		if !exists {
+			r.state = requestStateDone
+			return len(data), nil
+		}
+		contentLengthInt, err := strconv.Atoi(contentLengthStr)
+		if err != nil {
+			return 0, fmt.Errorf("malformed content-length: %v", err)
+		}
+		tmpBody := make([]byte, 0, contentLengthInt)
+		tmpBody = append(tmpBody, r.Body...)
+		remainingSpace := cap(tmpBody) - len(tmpBody)
+		if remainingSpace > len(data) {
+			remainingSpace = len(data)
+		}
+		tmpBody = append(tmpBody, data[:remainingSpace]...)
+		r.Body = tmpBody
+		if len(r.Body) > contentLengthInt {
+			return 0, fmt.Errorf("content-length mismatch: %v", err)
+		}
+		if len(r.Body) == contentLengthInt {
+			r.state = requestStateDone
+		}
+		return remainingSpace, nil
 	case requestStateDone:
 		return 0, fmt.Errorf("error: trying to read data in a done state")
 	default:
