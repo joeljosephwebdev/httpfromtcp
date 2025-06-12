@@ -63,6 +63,18 @@ func (h Headers) Get(name string) (string, bool) {
 	return value, ok
 }
 
+func (h Headers) Set(key, value string) {
+	key = strings.ToLower(key)
+	v, ok := h[key]
+	if ok {
+		value = strings.Join([]string{
+			v,
+			value,
+		}, ", ")
+	}
+	h[key] = value
+}
+
 func validateHeaderName(name string) bool {
 	if len(name) == 0 {
 		return false
