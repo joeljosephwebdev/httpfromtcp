@@ -6,15 +6,26 @@ import (
 	"net"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/joeljosephwebdev/httpfromtcp/internal/request"
+	"github.com/joeljosephwebdev/httpfromtcp/internal/response"
 )
 
 type Server struct {
 	listener net.Listener
 	Port     int
 	closed   atomic.Bool
+	handler  Handler
 }
 
-func Serve(port int) (*Server, error) {
+type HandlerError struct {
+	StatusCode response.StatusCode
+	Message    string
+}
+
+type Handler func(w *response.Writer, req *request.Request)
+
+func Serve(port int, handler Handler) (*Server, error) {
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create listener: %v", err)
@@ -22,6 +33,7 @@ func Serve(port int) (*Server, error) {
 	server := &Server{
 		listener: listener,
 		Port:     port,
+		handler:  handler,
 	}
 	go server.listen()
 	return server, nil
@@ -52,13 +64,25 @@ func (s *Server) listen() {
 
 func (s *Server) Handle(conn net.Conn) {
 	defer conn.Close()
-	response := "HTTP/1.1 200 OK\r\n" + // Status line
-		"Content-Type: text/plain\r\n" + // Examaple header
-		"\r\n" + // Blank line to separate headers from body
-		"Hello World!\r\n" // Body
-	_, err := conn.Write([]byte(response))
+	respWriter := response.NewWriter(conn)
+	// parse the request from the conn
+	req, err := request.RequestFromReader(conn)
 	if err != nil {
-		log.Printf("failed to write message: %v", err)
+		hErr := &HandlerError{
+			Message:    err.Error(),
+			StatusCode: response.StatusCodeBadRequest,
+		}
+		hErr.Write(respWriter)
+		return
 	}
-	return
+	s.handler(respWriter, req)
+}
+
+func (he *HandlerError) Write(w *response.Writer) {
+	w.WriteStatusLine(he.StatusCode)
+	headers := response.GetDefaultHeaders(len(he.Message))
+	headers.Set("Content-Type", "text/html")
+	w.WriteHeaders(headers)
+	body := response.BuildResponseBody(he.StatusCode, he.Message)
+	w.WriteBody(body)
 }

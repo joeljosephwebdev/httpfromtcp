@@ -3,6 +3,7 @@ package headers
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -61,6 +62,26 @@ func (h Headers) Get(name string) (string, bool) {
 	key := strings.ToLower(name)
 	value, ok := h[key]
 	return value, ok
+}
+
+func (h Headers) Add(key, value string) {
+	key = strings.ToLower(key)
+	v, ok := h[key]
+	if ok {
+		value = strings.Join([]string{
+			v,
+			value,
+		}, ", ")
+	}
+	h[key] = value
+}
+
+func (h Headers) Set(key, value string) {
+	if !validateHeaderName(strings.ToLower(key)) {
+		log.Printf("invalid header name: %s", key)
+		return
+	}
+	h[key] = value
 }
 
 func validateHeaderName(name string) bool {
