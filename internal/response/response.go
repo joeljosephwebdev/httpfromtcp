@@ -1,27 +1,26 @@
 package response
 
 import (
-	"fmt"
 	"io"
-
-	"github.com/joeljosephwebdev/httpfromtcp/internal/headers"
 )
 
-func GetDefaultHeaders(contentLen int) headers.Headers {
-	h := headers.NewHeaders()
-	h.Set("Content-Length", fmt.Sprintf("%d", contentLen))
-	h.Set("Connection", "close")
-	h.Set("Content-Type", "text/plain")
-	return h
+type Writer struct {
+	writer        io.Writer
+	responseState ResponseState
 }
 
-func WriteHeaders(w io.Writer, headers headers.Headers) error {
-	for k, v := range headers {
-		_, err := w.Write([]byte(fmt.Sprintf("%s: %s\r\n", k, v)))
-		if err != nil {
-			return err
-		}
+type ResponseState int
+
+func NewWriter(w io.Writer) *Writer {
+	return &Writer{
+		writer:        w,
+		responseState: responseStateInitialized,
 	}
-	_, err := w.Write([]byte("\r\n"))
-	return err
 }
+
+const (
+	responseStateInitialized ResponseState = iota
+	responseStateHeaders
+	responseStateBody
+	responseStateDone
+)
