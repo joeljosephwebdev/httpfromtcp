@@ -32,7 +32,6 @@ func (w *Writer) WriteHeaders(headers headers.Headers) error {
 		}
 	}
 	_, err := w.writer.Write([]byte("\r\n"))
-	w.responseState = responseStateBody
 
 	return err
 }
@@ -74,12 +73,27 @@ func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
 
 func (w *Writer) WriteChunkedBodyDone() (int, error) {
 	if w.responseState != responseStateBody {
-		return 0, fmt.Errorf("write body called out of order")
+		return 0, fmt.Errorf("cannot write body in state %d", w.responseState)
 	}
-	n, err := w.writer.Write([]byte("0\r\n\r\n"))
+	n, err := w.writer.Write([]byte("0\r\n"))
 	if err != nil {
-		return n, fmt.Errorf("failed to write chunked body done: %w", err)
+		return n, err
 	}
-	w.responseState = responseStateDone
+	w.responseState = responseStateTrailers
 	return n, nil
+}
+
+func (w *Writer) WriteTrailers(h headers.Headers) error {
+	if w.responseState != responseStateTrailers {
+		return fmt.Errorf("cannot write trailers in state %d", w.responseState)
+	}
+	defer func() { w.responseState = responseStateBody }()
+	for k, v := range h {
+		_, err := w.writer.Write([]byte(fmt.Sprintf("%s: %s\r\n", k, v)))
+		if err != nil {
+			return err
+		}
+	}
+	_, err := w.writer.Write([]byte("\r\n"))
+	return err
 }

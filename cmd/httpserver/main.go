@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -57,9 +58,9 @@ func handler(w *response.Writer, req *request.Request) {
 }
 
 func proxyHandler(w *response.Writer, req *request.Request) {
-	path := strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin/")
-	req_url := fmt.Sprintf("http://httpbin.org/%s", path)
-	headers := headers.NewHeaders()
+	target := strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin/")
+	req_url := fmt.Sprintf("http://httpbin.org/%s", target)
+	respHeaders := headers.NewHeaders()
 
 	resp, err := http.Get(req_url)
 	if err != nil {
@@ -74,21 +75,29 @@ func proxyHandler(w *response.Writer, req *request.Request) {
 	// copy headers from resp to headers
 	for k, v := range resp.Header {
 		for _, vv := range v {
-			headers.Add(k, vv)
+			respHeaders.Add(k, vv)
 		}
 	}
 
-	headers.Delete("Content-Length")
-	headers.Set("Transfer-Encoding", "chunked")
-	w.WriteHeaders(headers)
+	respHeaders.Delete("Content-Length")
+	respHeaders.Set("Transfer-Encoding", "chunked")
+	respHeaders.Add("Trailer", "X-Content-SHA256, X-Content-Length")
+	w.WriteHeaders(respHeaders)
 
+	var fullBody []byte
 	// create new buffer size 1024
-	buf := make([]byte, 32)
+	const maxChunkSize = 1024
+	buf := make([]byte, maxChunkSize)
+
 	for {
 		n, err := resp.Body.Read(buf)
+		fullBody = append(fullBody, buf[:n]...)
 		if err != nil {
 			if err == io.EOF {
-				w.WriteChunkedBodyDone()
+				_, err = w.WriteChunkedBodyDone()
+				if err != nil {
+					fmt.Println("Error writing chunked body done:", err)
+				}
 				break
 			}
 			fmt.Printf("Error reading httpbin response: %v\n", err)
@@ -101,6 +110,12 @@ func proxyHandler(w *response.Writer, req *request.Request) {
 		}
 		fmt.Printf("Wrote %d bytes\n", n)
 	}
+
+	sha256sum := fmt.Sprintf("%x", sha256.Sum256(fullBody))
+	trailers := headers.NewHeaders()
+	trailers.Add("X-Content-SHA256", sha256sum)
+	trailers.Add("X-Content-Length", fmt.Sprintf("%d", len(fullBody)))
+	w.WriteTrailers(trailers)
 }
 
 func writeServerError(w *response.Writer, _ *request.Request) {
