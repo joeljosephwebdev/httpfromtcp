@@ -22,5 +22,6 @@ const (
 	responseStateInitialized ResponseState = iota
 	responseStateHeaders
 	responseStateBody
+	responseStateTrailers
 	responseStateDone
 )
