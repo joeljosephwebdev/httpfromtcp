@@ -77,7 +77,8 @@ func (h Headers) Add(key, value string) {
 }
 
 func (h Headers) Set(key, value string) {
-	if !validateHeaderName(strings.ToLower(key)) {
+	key = strings.ToLower(key)
+	if !validateHeaderName(key) {
 		log.Printf("invalid header name: %s", key)
 		return
 	}

@@ -39,6 +39,11 @@ func handler(w *response.Writer, req *request.Request) {
 		return
 	}
 
+	if strings.HasPrefix(req.RequestLine.RequestTarget, "/video") {
+		videoHandler(w, req)
+		return
+	}
+
 	if req.RequestLine.RequestTarget == "/yourproblem" {
 		writeBadRequest(w, req)
 		return
@@ -57,10 +62,34 @@ func handler(w *response.Writer, req *request.Request) {
 	w.WriteBody(body)
 }
 
+func videoHandler(w *response.Writer, r *request.Request) {
+	respHeaders := response.GetDefaultHeaders(0)
+	respHeaders.Set("Content-Type", "video/mp4")
+
+	videoFile, err := os.Open("assets/vim.mp4")
+	if err != nil {
+		writeServerError(w, r)
+		log.Printf("Error opening video file: %v\n", err)
+		return
+	}
+	defer videoFile.Close()
+
+	videoData, err := io.ReadAll(videoFile)
+	if err != nil {
+		writeServerError(w, r)
+		log.Printf("Error reading video file: %v\n", err)
+		return
+	}
+	respHeaders.Set("Content-Length", fmt.Sprintf("%d", len(videoData)))
+	w.WriteStatusLine(response.StatusCodeSuccess)
+	w.WriteHeaders(respHeaders)
+	w.WriteBody(videoData)
+}
+
 func proxyHandler(w *response.Writer, req *request.Request) {
 	target := strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin/")
 	req_url := fmt.Sprintf("http://httpbin.org/%s", target)
-	respHeaders := headers.NewHeaders()
+	respHeaders := response.GetDefaultHeaders(0)
 
 	resp, err := http.Get(req_url)
 	if err != nil {
